@@ -1,31 +1,39 @@
-export const runtime = 'edge';
-
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const { query } = await req.json();
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const body = await request.json();
+    const query = body.query || 'happy hour deals Chicago';
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: 'Find happy hour deals at Chicago restaurants. Return ONLY a valid JSON array with no markdown, no backticks, no explanation. Just the raw JSON array. Up to 4 objects each with: name, address, cuisine (American/Mexican/Italian/Asian/Bar & Grill/Seafood/Other), time (e.g. 4-7 PM), days (array like ["Mon","Tue","Wed","Thu","Fri"]), deals (array of short strings).',
-        messages: [{ role: 'user', content: query }],
+        max_tokens: 800,
+        messages: [{
+          role: 'user',
+          content: `Find 4 real Chicago restaurant happy hour deals for: ${query}. Reply with ONLY a JSON array, no other text. Each item must have: name, address, cuisine, time, days (array), deals (array).`
+        }],
       }),
     });
-    const data = await res.json();
+
+    const data = await response.json();
     const text = data?.content?.[0]?.text || '[]';
-    const clean = text.replace(/```json/g,'').replace(/```/g,'').trim();
-    const results = JSON.parse(clean);
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']') + 1;
+    const jsonStr = text.slice(start, end);
+    const results = JSON.parse(jsonStr);
+    
     return new Response(JSON.stringify({ results }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
-  } catch (e) {
-    return new Response(JSON.stringify({ results: [], error: e.message }), {
+  } catch (err) {
+    return new Response(JSON.stringify({ results: [], error: err.message }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
