@@ -1,3 +1,5 @@
+import { Analytics } from '@vercel/analytics/next';
+
 export const metadata = {
   title: 'Happy Hour Chicago',
   description: 'Find the best happy hour deals in Chicago',
@@ -14,7 +16,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="apple-mobile-web-app-title" content="HH Chicago" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </head>
-      <body style={{margin:0,padding:0,background:'#fafafa'}}>{children}</body>
+      <body style={{margin:0,padding:0,background:'#fafafa'}}>
+        {children}
+        <Analytics />
+      </body>
     </html>
   )
 }
