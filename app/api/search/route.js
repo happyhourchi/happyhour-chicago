@@ -9,43 +9,29 @@ export async function POST(request) {
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'web-search-2025-03-05',
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5',
         max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: `Find 4 Chicago restaurant happy hour deals for: ${query}. Reply with ONLY a JSON array. No other text. Example format: [{"name":"Bar Name","address":"123 Main St, Chicago","cuisine":"American","time":"4-7 PM","days":["Mon","Tue","Wed","Thu","Fri"],"deals":["$5 beer","$7 cocktails"]}]`
-        }],
+        tools: [{type: 'web_search_20250305', name: 'web_search'}],
+        system: 'You are a Chicago happy hour expert. Search the web to find REAL current happy hour deals at Chicago restaurants. Return ONLY a valid JSON array with no markdown. Each object must have: name, address, cuisine (American/Mexican/Italian/Asian/Bar & Grill/Seafood/Other), time (e.g. 4-7 PM), days (array like ["Mon","Tue","Wed","Thu","Fri"]), deals (array of specific deal strings like "$5 margaritas"). Only include deals you actually found on their website or a reliable source.',
+        messages: [{role: 'user', content: `Search for real happy hour deals: ${query}. Visit restaurant websites to find actual current deals. Return as JSON array only.`}],
       }),
     });
 
-    const raw = await response.json();
+    const data = await response.json();
+    const textBlock = data?.content?.filter(b=>b.type==='text').map(b=>b.text).join('');
     
-    if (raw.error) {
-      return new Response(JSON.stringify({ results: [], error: raw.error.message }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const text = raw?.content?.[0]?.text || '[]';
-    const start = text.indexOf('[');
-    const end = text.lastIndexOf(']') + 1;
+    if(!textBlock) return new Response(JSON.stringify({results:[],error:'No response'}),{headers:{'Content-Type':'application/json'}});
     
-    if (start === -1) {
-      return new Response(JSON.stringify({ results: [], debug: text }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    const start = textBlock.indexOf('[');
+    const end = textBlock.lastIndexOf(']')+1;
+    if(start===-1) return new Response(JSON.stringify({results:[],debug:textBlock.slice(0,200)}),{headers:{'Content-Type':'application/json'}});
     
-    const results = JSON.parse(text.slice(start, end));
-    return new Response(JSON.stringify({ results }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    
-  } catch (err) {
-    return new Response(JSON.stringify({ results: [], error: err.message }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const results = JSON.parse(textBlock.slice(start,end));
+    return new Response(JSON.stringify({results}),{headers:{'Content-Type':'application/json'}});
+  } catch(err) {
+    return new Response(JSON.stringify({results:[],error:err.message}),{headers:{'Content-Type':'application/json'}});
   }
 }
