@@ -12,28 +12,39 @@ export async function POST(request) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 800,
+        max_tokens: 1000,
         messages: [{
           role: 'user',
-          content: `Find 4 real Chicago restaurant happy hour deals for: ${query}. Reply with ONLY a JSON array, no other text. Each item must have: name, address, cuisine, time, days (array), deals (array).`
+          content: `Find 4 Chicago restaurant happy hour deals for: ${query}. Reply with ONLY a JSON array. No other text. Example format: [{"name":"Bar Name","address":"123 Main St, Chicago","cuisine":"American","time":"4-7 PM","days":["Mon","Tue","Wed","Thu","Fri"],"deals":["$5 beer","$7 cocktails"]}]`
         }],
       }),
     });
 
-    const data = await response.json();
-    const text = data?.content?.[0]?.text || '[]';
+    const raw = await response.json();
+    
+    if (raw.error) {
+      return new Response(JSON.stringify({ results: [], error: raw.error.message }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const text = raw?.content?.[0]?.text || '[]';
     const start = text.indexOf('[');
     const end = text.lastIndexOf(']') + 1;
-    const jsonStr = text.slice(start, end);
-    const results = JSON.parse(jsonStr);
     
+    if (start === -1) {
+      return new Response(JSON.stringify({ results: [], debug: text }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    
+    const results = JSON.parse(text.slice(start, end));
     return new Response(JSON.stringify({ results }), {
-      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+    
   } catch (err) {
     return new Response(JSON.stringify({ results: [], error: err.message }), {
-      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
