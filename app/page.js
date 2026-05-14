@@ -36,6 +36,11 @@ const SEED = [
   {id:28,name:"Cabra",address:"167 N Green St, West Loop",cuisine:"Other",time:"4-6 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$8 pisco cocktails","$6 wine","Half-off ceviches"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
   {id:29,name:"Harriet's Rooftop",address:"167 N Green St, West Loop",cuisine:"American",time:"5-7 PM",days:["Mon","Tue","Wed","Thu","Fri","Sat"],deals:["$9 cocktails","$7 wine","Rooftop vibes"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
   {id:30,name:"Avli Taverna",address:"566 Chestnut St, River North",cuisine:"Other",time:"4-6 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$7 Greek wine","$8 cocktails","Half-off mezze"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
+  {id:31,name:"Girl & the Goat",address:"800 W Randolph St, West Loop",cuisine:"American",time:"4-6 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$8 cocktails","$6 wine","Half-off small plates"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
+  {id:32,name:"Big Star",address:"1531 N Damen Ave, Wicker Park",cuisine:"Mexican",time:"3-6 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$3 tacos","$4 Lone Star","$6 margaritas"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
+  {id:33,name:"The Violet Hour",address:"1520 N Damen Ave, Wicker Park",cuisine:"Bar & Grill",time:"5-7 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$8 cocktails","$5 beer","Half-off bar snacks"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
+  {id:34,name:"Pequod's Pizza",address:"2207 N Clybourn Ave, Lincoln Park",cuisine:"American",time:"4-7 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$3 drafts","$5 wells","Half-off appetizers"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
+  {id:35,name:"Au Cheval",address:"800 W Randolph St, West Loop",cuisine:"American",time:"3-5 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$5 drafts","$7 cocktails","$4 PBR"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
 ];
 
 function isActive(r) {
@@ -64,7 +69,7 @@ const COLORS = ['#185FA5','#0F6E56','#993C1D','#534AB7','#3B6D11','#854F0B'];
 function avatarColor(name) { return COLORS[(name||'A').charCodeAt(0)%COLORS.length]; }
 
 export default function Home() {
-  const [restaurants, setRestaurants] = useState(SEED);
+  const [restaurants, setRestaurants] = useState([]);
   const [feed, setFeed] = useState([]);
   const [tab, setTab] = useState('list');
   const [search, setSearch] = useState('');
@@ -82,16 +87,20 @@ export default function Home() {
   const [addForm, setAddForm] = useState({name:'',address:'',cuisine:'American',time:'',days:'Mon-Fri',deals:''});
   const [reviewForm, setReviewForm] = useState({stars:5,text:''});
   const [toast, setToast] = useState('');
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     try {
       const u = localStorage.getItem('hh_user');
       if (u) setUser(JSON.parse(u));
       const r = localStorage.getItem('hh_restaurants');
-      if (r) setRestaurants(JSON.parse(r));
+      setRestaurants(r ? JSON.parse(r) : SEED);
       const f = localStorage.getItem('hh_feed');
       if (f) setFeed(JSON.parse(f));
-    } catch(e) {}
+    } catch(e) {
+      setRestaurants(SEED);
+    }
   }, []);
 
   function saveR(rs) { setRestaurants(rs); try{localStorage.setItem('hh_restaurants',JSON.stringify(rs));}catch(e){} }
@@ -153,18 +162,34 @@ export default function Home() {
   }
 
   async function runAISearch() {
-    setAiLoading(true);setAiResults([]);
-    try{
-      const res=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:aiQuery})});
-      const data=await res.json();
-      setAiResults(data.results||[]);
-    }catch(e){toast2('Search failed');}
+    setAiLoading(true);
+    setAiResults([]);
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: aiQuery})
+      });
+      const text = await res.text();
+      console.log('AI Search raw response:', text);
+      const data = JSON.parse(text);
+      const results = Array.isArray(data.results) ? data.results : [];
+      console.log('AI Search results:', results);
+      setAiResults(results);
+      if (results.length === 0) {
+        toast2('No results found. Try a different search.');
+      }
+    } catch(e) {
+      console.error('AI Search error:', e);
+      toast2('Search failed: ' + e.message);
+    }
     setAiLoading(false);
   }
 
   function addFromAI(r) {
-    saveR([...restaurants,{...r,id:Date.now(),reviews:[],checkins:[],saved:false,isNew:true,addedDate:todayDate}]);
-    setAiResults(aiResults.filter(x=>x.name!==r.name));
+    const newR = {...r,id:Date.now(),reviews:[],checkins:[],saved:false,isNew:true,addedDate:todayDate};
+    saveR([...restaurants,newR]);
+    setAiResults(prev => prev.filter(x=>x.name!==r.name));
     saveU({...user,xp:(user.xp||0)+25});
     toast2('+25 XP! Added '+r.name);
   }
@@ -190,6 +215,8 @@ export default function Home() {
     const bs=avgRating(b.reviews)*60+(b.checkins||[]).length*40+(b.reviews||[]).length*20;
     return bs-as;
   });
+
+  if (!mounted) return null;
 
   return (
     <main style={{maxWidth:900,margin:'0 auto',padding:'0 16px 60px',fontFamily:'system-ui,sans-serif',background:'#fafafa',minHeight:'100vh'}}>
@@ -358,7 +385,7 @@ export default function Home() {
               <button onClick={()=>setDetailTarget(null)} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#888'}}>x</button>
             </div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
-              {(detailTarget.deals||[]).map((d,i)=><span key={i} style={{fontSize:12,padding:'3px 10px',borderRadius:20,background:'#f0fdf4',color:'#166634'}}>{d}</span>)}
+              {(detailTarget.deals||[]).map((d,i)=><span key={i} style={{fontSize:12,padding:'3px 10px',borderRadius:20,background:'#f0fdf4',color:'#166534'}}>{d}</span>)}
             </div>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
               <div style={{fontSize:14,fontWeight:500}}>Reviews ({(detailTarget.reviews||[]).length})</div>
@@ -436,11 +463,13 @@ export default function Home() {
             <h2 style={{fontSize:18,fontWeight:700,marginBottom:12}}>AI Search</h2>
             <input value={aiQuery} onChange={e=>setAiQuery(e.target.value)} placeholder="e.g. rooftop bars River North" style={{width:'100%',padding:'8px 12px',borderRadius:8,border:'1px solid #ddd',fontSize:13,marginBottom:10}}/>
             {aiLoading&&<div style={{padding:10,background:'#f5f5f5',borderRadius:8,fontSize:13,color:'#888',marginBottom:10}}>Searching for deals...</div>}
+            {aiResults.length>0&&<div style={{fontSize:12,color:'#888',marginBottom:8}}>Found {aiResults.length} restaurants - tap to add:</div>}
             {aiResults.map((r,i)=>(
-              <div key={i} onClick={()=>addFromAI(r)} style={{background:'#f9f9f9',borderRadius:10,padding:'10px 12px',marginBottom:8,cursor:'pointer'}}>
+              <div key={i} onClick={()=>addFromAI(r)} style={{background:'#f9f9f9',borderRadius:10,padding:'10px 12px',marginBottom:8,cursor:'pointer',border:'1px solid #eee'}}>
                 <div style={{fontWeight:500,fontSize:14}}>{r.name}</div>
                 <div style={{fontSize:12,color:'#888'}}>{r.address} · {r.time}</div>
-                <div style={{fontSize:11,color:'#3b82f6',marginTop:4}}>Tap to add +25xp</div>
+                {(r.deals||[]).slice(0,2).map((d,i)=><span key={i} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'#f0fdf4',color:'#166534',marginRight:4,marginTop:4,display:'inline-block'}}>{d}</span>)}
+                <div style={{fontSize:11,color:'#3b82f6',marginTop:6}}>Tap to add +25xp</div>
               </div>
             ))}
             <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:8}}>
