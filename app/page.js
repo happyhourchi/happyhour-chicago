@@ -13,6 +13,21 @@ const todayDate = new Date().toDateString();
 
 const NEIGHBORHOODS = ['All','Loop','River North','West Loop','Fulton Market','River West','Lincoln Park','Wicker Park','Logan Square','Gold Coast','Andersonville','Streeterville','Avondale','Lincoln Square','Old Town','Lakeview','South Loop','Hyde Park','Pilsen','Bucktown'];
 
+const BADGES = [
+  {id:'first_checkin',icon:'🍺',name:'First Sip',desc:'Checked in for the first time',check:(ci,rv,rt)=>ci.length>=1},
+  {id:'five_checkins',icon:'🏃',name:'Bar Hopper',desc:'Checked in at 5 different bars',check:(ci)=>[...new Set(ci.map(c=>c.restaurant_id))].length>=5},
+  {id:'ten_checkins',icon:'🌟',name:'Regular',desc:'10 total check-ins',check:(ci)=>ci.length>=10},
+  {id:'first_review',icon:'✍️',name:'Critic',desc:'Wrote your first review',check:(ci,rv)=>rv>=1},
+  {id:'five_reviews',icon:'📝',name:'Top Critic',desc:'Wrote 5 reviews',check:(ci,rv)=>rv>=5},
+  {id:'three_neighborhoods',icon:'🗺️',name:'Explorer',desc:'Visited 3 different neighborhoods',check:(ci)=>[...new Set(ci.map(c=>c.neighborhood).filter(Boolean))].length>=3},
+  {id:'five_neighborhoods',icon:'🏙️',name:'City Slicker',desc:'Visited 5 different neighborhoods',check:(ci)=>[...new Set(ci.map(c=>c.neighborhood).filter(Boolean))].length>=5},
+  {id:'rated_five',icon:'⭐',name:'Rater',desc:'Rated 5 restaurants',check:(ci,rv,rt)=>rt>=5},
+  {id:'hundred_xp',icon:'💯',name:'Century Club',desc:'Earned 100 XP',check:(ci,rv,rt,xp)=>xp>=100},
+  {id:'vip',icon:'👑',name:'VIP',desc:'Earned 500 XP',check:(ci,rv,rt,xp)=>xp>=500},
+  {id:'weekend_warrior',icon:'🎉',name:'Weekend Warrior',desc:'Checked in on a Saturday or Sunday',check:(ci)=>ci.some(c=>{ const d=new Date(c.checked_in_at).getDay(); return d===0||d===6; })},
+  {id:'loyal',icon:'❤️',name:'Loyal',desc:'Checked in at the same bar 3 times',check:(ci)=>{ const counts={}; ci.forEach(c=>{counts[c.restaurant_id]=(counts[c.restaurant_id]||0)+1;}); return Object.values(counts).some(v=>v>=3); }},
+];
+
 const SEED = [
   {id:1,name:"Monk's Pub",address:"205 W Lake St, Loop",cuisine:"Bar & Grill",neighborhood:"Loop",time:"3-7 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$3 Old Style","$5 wells","Half-off apps"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
   {id:2,name:"Aba",address:"302 N Green St, Fulton Market",cuisine:"Other",neighborhood:"Fulton Market",time:"4-6 PM",days:["Mon","Tue","Wed","Thu","Fri"],deals:["$8 cocktails","$6 wines","Half-off mezze"],reviews:[],checkins:[],saved:false,isNew:false,addedDate:todayDate},
@@ -76,6 +91,14 @@ function initials(name) {
 const COLORS = ['#185FA5','#0F6E56','#993C1D','#534AB7','#3B6D11','#854F0B'];
 function avatarColor(name) { return COLORS[(name||'A').charCodeAt(0)%COLORS.length]; }
 
+function getEarnedBadges(checkins, reviewCount, ratingCount, xp) {
+  return BADGES.filter(b => b.check(checkins, reviewCount, ratingCount, xp));
+}
+
+function getNextBadge(checkins, reviewCount, ratingCount, xp) {
+  return BADGES.find(b => !b.check(checkins, reviewCount, ratingCount, xp));
+}
+
 export default function Home() {
   const [restaurants, setRestaurants] = useState([]);
   const [feed, setFeed] = useState([]);
@@ -84,6 +107,7 @@ export default function Home() {
   const [cuisineF, setCuisineF] = useState('');
   const [dayF, setDayF] = useState('');
   const [neighborhoodF, setNeighborhoodF] = useState('All');
+  const [openNowF, setOpenNowF] = useState(false);
   const [authUser, setAuthUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [showAuth, setShowAuth] = useState(false);
@@ -104,10 +128,12 @@ export default function Home() {
   const [addForm, setAddForm] = useState({name:'',address:'',cuisine:'American',neighborhood:'River North',time:'',days:'Mon-Fri',deals:''});
   const [reviewForm, setReviewForm] = useState({stars:5,text:''});
   const [toast, setToast] = useState('');
+  const [newBadge, setNewBadge] = useState(null);
   const [mounted, setMounted] = useState(false);
   const [dbCheckins, setDbCheckins] = useState([]);
   const [dbRatings, setDbRatings] = useState({});
   const [dbSaved, setDbSaved] = useState([]);
+  const [reviewCount, setReviewCount] = useState(0);
 
   useEffect(() => {
     setMounted(true);
@@ -119,7 +145,7 @@ export default function Home() {
     } catch(e) { setRestaurants(SEED); }
 
     supabase.auth.getSession().then(({data:{session}})=>{
-      if(session?.user) {
+      if(session?.user){
         setAuthUser(session.user);
         loadProfile(session.user.id);
         loadUserData(session.user.id);
@@ -137,6 +163,7 @@ export default function Home() {
         setDbCheckins([]);
         setDbRatings({});
         setDbSaved([]);
+        setReviewCount(0);
       }
     });
     return ()=>subscription.unsubscribe();
@@ -146,59 +173,65 @@ export default function Home() {
     const {data} = await supabase.from('profiles').select('*').eq('id',userId).single();
     if(data) setProfile(data);
     else {
-      const {data:newProfile} = await supabase.from('profiles').insert({id:userId,username:'Happy Hour Fan',xp:0,level:1}).select().single();
-      if(newProfile) setProfile(newProfile);
+      const {data:np} = await supabase.from('profiles').insert({id:userId,username:'Happy Hour Fan',xp:0,level:1}).select().single();
+      if(np) setProfile(np);
     }
   }
 
   async function loadUserData(userId) {
-    const [{data:ci},{data:rt},{data:sv}] = await Promise.all([
+    const [{data:ci},{data:rt},{data:sv},{data:rv}] = await Promise.all([
       supabase.from('checkins').select('*').eq('user_id',userId),
       supabase.from('ratings').select('*').eq('user_id',userId),
       supabase.from('saved').select('*').eq('user_id',userId),
+      supabase.from('reviews').select('id').eq('user_id',userId),
     ]);
     if(ci) setDbCheckins(ci);
-    if(rt) {
-      const ratingsMap = {};
-      rt.forEach(r=>ratingsMap[r.restaurant_id]=r.stars);
-      setDbRatings(ratingsMap);
-    }
+    if(rt){const m={};rt.forEach(r=>m[r.restaurant_id]=r.stars);setDbRatings(m);}
     if(sv) setDbSaved(sv.map(s=>s.restaurant_id));
+    if(rv) setReviewCount(rv.length);
   }
 
-  async function addXP(amount) {
+  async function addXP(amount, newCheckins, newReviewCount, newRatingCount) {
     if(!authUser||!profile) return;
-    const newXp = (profile.xp||0)+amount;
-    const newLevel = Math.floor(newXp/200)+1;
+    const newXp=(profile.xp||0)+amount;
+    const newLevel=Math.floor(newXp/200)+1;
     await supabase.from('profiles').update({xp:newXp,level:newLevel}).eq('id',authUser.id);
-    setProfile(p=>({...p,xp:newXp,level:newLevel}));
+    const updatedProfile = {...profile,xp:newXp,level:newLevel};
+    setProfile(updatedProfile);
+
+    const ci = newCheckins || dbCheckins;
+    const rv = newReviewCount !== undefined ? newReviewCount : reviewCount;
+    const rt = newRatingCount !== undefined ? newRatingCount : Object.keys(dbRatings).length;
+
+    const prevBadges = getEarnedBadges(dbCheckins, reviewCount, Object.keys(dbRatings).length, profile.xp||0);
+    const newBadges = getEarnedBadges(ci, rv, rt, newXp);
+    const justEarned = newBadges.filter(b=>!prevBadges.find(p=>p.id===b.id));
+    if(justEarned.length>0){
+      setNewBadge(justEarned[0]);
+      setTimeout(()=>setNewBadge(null),4000);
+    }
   }
 
   async function signInWithGoogle() {
     setAuthLoading(true);
-    const {error} = await supabase.auth.signInWithOAuth({
-      provider:'google',
-      options:{redirectTo:window.location.origin}
-    });
+    const {error} = await supabase.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});
     if(error) setAuthError(error.message);
     setAuthLoading(false);
   }
 
   async function signInWithEmail() {
-    setAuthLoading(true);
-    setAuthError('');
+    setAuthLoading(true);setAuthError('');
     const {error} = await supabase.auth.signInWithPassword({email:authEmail,password:authPassword});
     if(error) setAuthError(error.message);
-    else { setShowAuth(false); toast2('Welcome back!'); }
+    else{setShowAuth(false);toast2('Welcome back!');}
     setAuthLoading(false);
   }
 
   async function signUpWithEmail() {
-    setAuthLoading(true);
-    setAuthError('');
+    setAuthLoading(true);setAuthError('');
     const {data,error} = await supabase.auth.signUp({email:authEmail,password:authPassword});
-    if(error) { setAuthError(error.message); setAuthLoading(false); return; }
-    if(data.user) {
+    if(error){setAuthError(error.message);setAuthLoading(false);return;}
+    if(data.user){
       await supabase.from('profiles').insert({id:data.user.id,username:authUsername||'Happy Hour Fan',xp:0,level:1});
       toast2('Account created! Check your email to verify.');
       setShowAuth(false);
@@ -211,36 +244,35 @@ export default function Home() {
     toast2('Signed out!');
   }
 
-  function saveR(rs) { setRestaurants(rs); try{localStorage.setItem('hh_restaurants',JSON.stringify(rs));}catch(e){} }
-  function saveF(f) { setFeed(f); try{localStorage.setItem('hh_feed',JSON.stringify(f));}catch(e){} }
-  function toast2(msg) { setToast(msg); setTimeout(()=>setToast(''),3000); }
-
-  function pushFeed(type,rname,text,stars) {
-    saveF([{type,rname,text,stars,author:profile?.username||authUser?.email||'Guest',date:'Just now',id:Date.now()},...feed].slice(0,30));
-  }
+  function saveR(rs){setRestaurants(rs);try{localStorage.setItem('hh_restaurants',JSON.stringify(rs));}catch(e){}}
+  function saveF(f){setFeed(f);try{localStorage.setItem('hh_feed',JSON.stringify(f));}catch(e){}}
+  function toast2(msg){setToast(msg);setTimeout(()=>setToast(''),3000);}
+  function pushFeed(type,rname,text){saveF([{type,rname,text,author:profile?.username||authUser?.email||'Guest',date:'Just now',id:Date.now()},...feed].slice(0,30));}
 
   async function doCheckin(rid) {
-    const r = restaurants.find(x=>x.id===rid);
+    if(!authUser){setShowAuth(true);return;}
+    const r=restaurants.find(x=>x.id===rid);
     if(!r) return;
-    const alreadyCheckedIn = dbCheckins.some(c=>c.restaurant_id===String(rid)&&new Date(c.checked_in_at).toDateString()===todayDate);
+    const alreadyCheckedIn=dbCheckins.some(c=>c.restaurant_id===String(rid)&&new Date(c.checked_in_at).toDateString()===todayDate);
     if(alreadyCheckedIn){toast2('Already checked in today!');return;}
-    if(authUser){
-      await supabase.from('checkins').insert({user_id:authUser.id,restaurant_id:String(rid),restaurant_name:r.name,neighborhood:r.neighborhood});
-      setDbCheckins(prev=>[...prev,{restaurant_id:String(rid),checked_in_at:new Date().toISOString()}]);
-      await addXP(50);
-    }
+    const newCi={restaurant_id:String(rid),checked_in_at:new Date().toISOString(),neighborhood:r.neighborhood};
+    await supabase.from('checkins').insert({user_id:authUser.id,restaurant_id:String(rid),restaurant_name:r.name,neighborhood:r.neighborhood});
+    const updatedCheckins=[...dbCheckins,newCi];
+    setDbCheckins(updatedCheckins);
+    await addXP(50,updatedCheckins,undefined,undefined);
     pushFeed('ci',r.name,'checked in at '+r.name);
     toast2('+50 XP! Checked in at '+r.name);
   }
 
   async function doRate(rid,stars) {
     if(!authUser){setShowAuth(true);toast2('Sign in to rate!');return;}
-    const existing = dbRatings[String(rid)];
+    const existing=dbRatings[String(rid)];
     if(existing){
       await supabase.from('ratings').update({stars}).eq('user_id',authUser.id).eq('restaurant_id',String(rid));
     } else {
       await supabase.from('ratings').insert({user_id:authUser.id,restaurant_id:String(rid),stars});
-      await addXP(10);
+      const newRatingCount=Object.keys(dbRatings).length+1;
+      await addXP(10,undefined,undefined,newRatingCount);
     }
     setDbRatings(prev=>({...prev,[String(rid)]:stars}));
     toast2('+10 XP! Rated '+stars+' stars');
@@ -248,7 +280,7 @@ export default function Home() {
 
   async function doSaveR(rid) {
     if(!authUser){setShowAuth(true);toast2('Sign in to save!');return;}
-    const isSaved = dbSaved.includes(String(rid));
+    const isSaved=dbSaved.includes(String(rid));
     if(isSaved){
       await supabase.from('saved').delete().eq('user_id',authUser.id).eq('restaurant_id',String(rid));
       setDbSaved(prev=>prev.filter(x=>x!==String(rid)));
@@ -264,17 +296,19 @@ export default function Home() {
     await supabase.from('reviews').insert({user_id:authUser.id,restaurant_id:String(reviewTarget.id),restaurant_name:reviewTarget.name,body:reviewForm.text,stars:reviewForm.stars});
     const rv={id:Date.now(),author:profile?.username||authUser.email,text:reviewForm.text,stars:reviewForm.stars,likes:[],date:'Just now'};
     saveR(restaurants.map(r=>r.id===reviewTarget.id?{...r,reviews:[rv,...(r.reviews||[])]}:r));
-    await addXP(20);
-    pushFeed('rv',reviewTarget.name,reviewForm.text,reviewForm.stars);
+    const newReviewCount=reviewCount+1;
+    setReviewCount(newReviewCount);
+    await addXP(20,undefined,newReviewCount,undefined);
+    pushFeed('rv',reviewTarget.name,reviewForm.text);
     setShowReview(false);
     setReviewForm({stars:5,text:''});
     toast2('+20 XP! Review posted');
   }
 
   function submitAdd() {
+    if(!addForm.name.trim()){toast2('Please enter a name');return;}
     const dn=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     let days=[];
-    if(!addForm.name.trim()){toast2('Please enter a name');return;}
     if(addForm.days.includes('-')){
       const pts=addForm.days.split('-').map(s=>s.trim());
       const si=dn.indexOf(pts[0]),ei=dn.indexOf(pts[1]);
@@ -311,15 +345,18 @@ export default function Home() {
     toast2('+25 XP! Added '+r.name);
   }
 
-  const level = Math.floor((profile?.xp||0)/200)+1;
-  const prog = (profile?.xp||0)%200;
-  const displayName = profile?.username||authUser?.email?.split('@')[0]||'Guest';
+  const level=Math.floor((profile?.xp||0)/200)+1;
+  const prog=(profile?.xp||0)%200;
+  const displayName=profile?.username||authUser?.email?.split('@')[0]||'Guest';
+  const earnedBadges=authUser?getEarnedBadges(dbCheckins,reviewCount,Object.keys(dbRatings).length,profile?.xp||0):[];
+  const nextBadge=authUser?getNextBadge(dbCheckins,reviewCount,Object.keys(dbRatings).length,profile?.xp||0):null;
 
   const filtered=restaurants.filter(r=>{
     if(search&&!r.name.toLowerCase().includes(search.toLowerCase()))return false;
     if(cuisineF&&r.cuisine!==cuisineF)return false;
     if(dayF&&!r.days.includes(dayF))return false;
     if(neighborhoodF&&neighborhoodF!=='All'&&r.neighborhood!==neighborhoodF)return false;
+    if(openNowF&&!isActive(r))return false;
     if(tab==='saved'&&!dbSaved.includes(String(r.id)))return false;
     return true;
   }).sort((a,b)=>(isActive(b)?1:0)-(isActive(a)?1:0));
@@ -339,18 +376,26 @@ export default function Home() {
     <main style={{maxWidth:960,margin:'0 auto',padding:'0 16px 60px',fontFamily:'system-ui,sans-serif',background:'#fafafa',minHeight:'100vh'}}>
       {toast&&<div style={{position:'fixed',bottom:24,right:24,background:'#1a1a1a',color:'#fff',padding:'10px 18px',borderRadius:10,fontSize:13,zIndex:9999}}>{toast}</div>}
 
+      {newBadge&&(
+        <div style={{position:'fixed',top:24,left:'50%',transform:'translateX(-50%)',background:'#1a1a1a',color:'#fff',padding:'16px 24px',borderRadius:16,fontSize:14,zIndex:9999,textAlign:'center',boxShadow:'0 8px 32px rgba(0,0,0,0.3)'}}>
+          <div style={{fontSize:32,marginBottom:4}}>{newBadge.icon}</div>
+          <div style={{fontWeight:600}}>Badge Unlocked: {newBadge.name}!</div>
+          <div style={{fontSize:12,color:'#aaa',marginTop:2}}>{newBadge.desc}</div>
+        </div>
+      )}
+
       <div style={{display:'flex',alignItems:'center',gap:10,padding:'20px 0 12px',flexWrap:'wrap'}}>
         <div style={{flex:1}}>
           <h1 style={{fontSize:24,fontWeight:700,color:'#1a1a1a',margin:0}}>Happy Hour Chicago</h1>
           <div style={{fontSize:12,color:'#888',marginTop:2}}>
-            {authUser ? `Level ${level} · ${profile?.xp||0} XP · ${displayName}` : 'Browse Chicago happy hours'}
+            {authUser?`Level ${level} · ${profile?.xp||0} XP · ${displayName}`:'Browse Chicago happy hours'}
           </div>
         </div>
         <button onClick={()=>setShowAI(true)} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'1px solid #ddd',background:'none',cursor:'pointer'}}>AI Search</button>
         <button onClick={()=>setShowAdd(true)} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'1px solid #ddd',background:'none',cursor:'pointer'}}>+ Add</button>
         {authUser
-          ? <button onClick={signOut} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'1px solid #ddd',background:'none',cursor:'pointer',color:'#888'}}>Sign out</button>
-          : <button onClick={()=>setShowAuth(true)} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'none',background:'#1a1a1a',color:'#fff',cursor:'pointer'}}>Sign in</button>
+          ?<button onClick={signOut} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'1px solid #ddd',background:'none',cursor:'pointer',color:'#888'}}>Sign out</button>
+          :<button onClick={()=>setShowAuth(true)} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'none',background:'#1a1a1a',color:'#fff',cursor:'pointer'}}>Sign in</button>
         }
       </div>
 
@@ -371,9 +416,7 @@ export default function Home() {
 
       <div style={{display:'flex',borderBottom:'1px solid #eee',marginBottom:16,overflowX:'auto'}}>
         {[['list','Browse'],['feed','Activity'],['leaderboard','Rankings'],['saved','Saved'],['profile','Profile']].map(([t,label])=>(
-          <button key={t} onClick={()=>setTab(t)} style={{padding:'8px 14px',fontSize:13,border:'none',background:'none',cursor:'pointer',borderBottom:tab===t?'2px solid #1a1a1a':'2px solid transparent',color:tab===t?'#1a1a1a':'#888',fontWeight:tab===t?500:400,whiteSpace:'nowrap'}}>
-            {label}
-          </button>
+          <button key={t} onClick={()=>setTab(t)} style={{padding:'8px 14px',fontSize:13,border:'none',background:'none',cursor:'pointer',borderBottom:tab===t?'2px solid #1a1a1a':'2px solid transparent',color:tab===t?'#1a1a1a':'#888',fontWeight:tab===t?500:400,whiteSpace:'nowrap'}}>{label}</button>
         ))}
       </div>
 
@@ -381,6 +424,9 @@ export default function Home() {
         <>
           <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{flex:1,minWidth:140,padding:'8px 12px',borderRadius:8,border:'1px solid #ddd',fontSize:13}}/>
+            <button onClick={()=>setOpenNowF(!openNowF)} style={{padding:'8px 14px',fontSize:13,borderRadius:8,border:'1px solid '+(openNowF?'#22c55e':'#ddd'),background:openNowF?'#dcfce7':'#fff',color:openNowF?'#166534':'#555',cursor:'pointer',fontWeight:openNowF?500:400}}>
+              {openNowF?'✓ Open now':'Open now'}
+            </button>
             <select value={cuisineF} onChange={e=>setCuisineF(e.target.value)} style={{padding:'8px 10px',borderRadius:8,border:'1px solid #ddd',fontSize:13}}>
               <option value="">All cuisines</option>
               {['American','Mexican','Italian','Asian','Bar & Grill','Seafood','Other'].map(c=><option key={c}>{c}</option>)}
@@ -390,6 +436,7 @@ export default function Home() {
               {DAYS.map(d=><option key={d}>{d}</option>)}
             </select>
           </div>
+
           <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
             {NEIGHBORHOODS.map(n=>{
               const count=n==='All'?restaurants.length:(neighborhoodCounts[n]||0);
@@ -401,12 +448,14 @@ export default function Home() {
               );
             })}
           </div>
+
           {neighborhoodF!=='All'&&(
             <div style={{marginBottom:12,fontSize:13,color:'#888'}}>
               Showing {filtered.length} spot{filtered.length!==1?'s':''} in <strong style={{color:'#1a1a1a'}}>{neighborhoodF}</strong>
               <button onClick={()=>setNeighborhoodF('All')} style={{marginLeft:8,fontSize:12,color:'#3b82f6',background:'none',border:'none',cursor:'pointer',padding:0}}>Clear</button>
             </div>
           )}
+
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:12}}>
             {filtered.map(r=>{
               const active=isActive(r);
@@ -425,7 +474,7 @@ export default function Home() {
                   </div>
                   <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
                     <span style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:active?'#dcfce7':'#f5f5f5',color:active?'#166534':'#888'}}>{active?'Open now':r.time}</span>
-                    {r.neighborhood&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'#f0f4ff',color:'#3b4cbd',cursor:'pointer'}} onClick={()=>setNeighborhoodF(r.neighborhood)}>{r.neighborhood}</span>}
+                    {r.neighborhood&&<span onClick={()=>setNeighborhoodF(r.neighborhood)} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'#f0f4ff',color:'#3b4cbd',cursor:'pointer'}}>{r.neighborhood}</span>}
                     {(r.deals||[]).slice(0,2).map((d,i)=><span key={i} style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:'#f0fdf4',color:'#166534'}}>{d}</span>)}
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
@@ -438,15 +487,15 @@ export default function Home() {
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                     {checked
                       ?<span style={{fontSize:12,padding:'5px 10px',borderRadius:8,background:'#f5f5f5',color:'#888'}}>Checked in today</span>
-                      :<button onClick={()=>authUser?doCheckin(r.id):(setShowAuth(true))} style={{fontSize:12,padding:'5px 10px',borderRadius:8,background:'#dcfce7',color:'#166534',border:'1px solid #86efac',cursor:'pointer'}}>Check in +50xp</button>
+                      :<button onClick={()=>doCheckin(r.id)} style={{fontSize:12,padding:'5px 10px',borderRadius:8,background:'#dcfce7',color:'#166534',border:'1px solid #86efac',cursor:'pointer'}}>Check in +50xp</button>
                     }
-                    <button onClick={()=>authUser?setReviewTarget(r)&&setShowReview(true):(setShowAuth(true))} style={{fontSize:12,padding:'5px 10px',borderRadius:8,background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>{if(!authUser){setShowAuth(true);return;}setReviewTarget(r);setShowReview(true);}}>Review +20xp</button>
+                    <button onClick={()=>{if(!authUser){setShowAuth(true);return;}setReviewTarget(r);setShowReview(true);}} style={{fontSize:12,padding:'5px 10px',borderRadius:8,background:'#eff6ff',color:'#1d4ed8',border:'1px solid #bfdbfe',cursor:'pointer'}}>Review +20xp</button>
                     <span style={{fontSize:12,color:'#888'}}>{(r.checkins||[]).length} check-ins</span>
                   </div>
                 </div>
               );
             })}
-            {filtered.length===0&&<div style={{textAlign:'center',padding:'2rem',color:'#888',gridColumn:'1/-1'}}>No restaurants found. <button onClick={()=>setNeighborhoodF('All')} style={{color:'#3b82f6',background:'none',border:'none',cursor:'pointer',fontSize:13}}>Show all</button></div>}
+            {filtered.length===0&&<div style={{textAlign:'center',padding:'2rem',color:'#888',gridColumn:'1/-1'}}>No restaurants found. <button onClick={()=>{setNeighborhoodF('All');setOpenNowF(false);}} style={{color:'#3b82f6',background:'none',border:'none',cursor:'pointer',fontSize:13}}>Clear filters</button></div>}
           </div>
         </>
       )}
@@ -501,36 +550,66 @@ export default function Home() {
             <div style={{background:'#fff',border:'1px solid #eee',borderRadius:12,padding:24,textAlign:'center'}}>
               <div style={{fontSize:40,marginBottom:12}}>🍺</div>
               <div style={{fontWeight:600,fontSize:18,marginBottom:8}}>Create an account</div>
-              <div style={{fontSize:14,color:'#888',marginBottom:20}}>Sign in to track your check-ins, earn XP, and save your favorite spots across all your devices.</div>
+              <div style={{fontSize:14,color:'#888',marginBottom:20}}>Sign in to track your check-ins, earn XP, collect badges, and save your favorite spots.</div>
               <button onClick={()=>setShowAuth(true)} style={{padding:'12px 28px',fontSize:14,borderRadius:8,border:'none',background:'#1a1a1a',color:'#fff',cursor:'pointer'}}>Sign in or create account</button>
             </div>
           ):(
             <div>
               <div style={{background:'#fff',border:'1px solid #eee',borderRadius:12,padding:16,marginBottom:12}}>
                 <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12}}>
-                  <div style={{width:52,height:52,borderRadius:'50%',background:'#dbeafe',color:'#1d4ed8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:700}}>{initials(displayName)}</div>
+                  <div style={{width:56,height:56,borderRadius:'50%',background:'#dbeafe',color:'#1d4ed8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:700}}>{initials(displayName)}</div>
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:16}}>{displayName}</div>
                     <div style={{fontSize:12,color:'#888'}}>{authUser.email}</div>
-                    <div style={{fontSize:12,color:'#888'}}>Level {level} · {profile?.xp||0} XP</div>
+                    <div style={{fontSize:12,color:'#888',marginTop:2}}>Level {level} · {profile?.xp||0} XP · {earnedBadges.length} badge{earnedBadges.length!==1?'s':''}</div>
                   </div>
                 </div>
-                <div style={{background:'#eee',borderRadius:4,height:6,marginBottom:6}}>
+                <div style={{background:'#eee',borderRadius:4,height:6,marginBottom:4}}>
                   <div style={{background:'#22c55e',borderRadius:4,height:6,width:Math.round(prog/200*100)+'%'}}/>
                 </div>
-                <div style={{fontSize:11,color:'#888',marginBottom:12}}>{prog}/200 XP to Level {level+1}</div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
-                  {[{n:dbCheckins.length,l:'Check-ins'},{n:Object.keys(dbRatings).length,l:'Rated'},{n:profile?.xp||0,l:'Total XP'}].map(stat=>(
+                <div style={{fontSize:11,color:'#888',marginBottom:16}}>{prog}/200 XP to Level {level+1}</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:16}}>
+                  {[{n:dbCheckins.length,l:'Check-ins'},{n:reviewCount,l:'Reviews'},{n:profile?.xp||0,l:'Total XP'}].map(stat=>(
                     <div key={stat.l} style={{background:'#f5f5f5',borderRadius:8,padding:10,textAlign:'center'}}>
                       <div style={{fontSize:20,fontWeight:700}}>{stat.n}</div>
                       <div style={{fontSize:11,color:'#888'}}>{stat.l}</div>
                     </div>
                   ))}
                 </div>
+
+                {nextBadge&&(
+                  <div style={{background:'#fafafa',border:'1px solid #eee',borderRadius:10,padding:'10px 14px',marginBottom:12}}>
+                    <div style={{fontSize:11,color:'#888',marginBottom:4}}>Next badge</div>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <span style={{fontSize:24,filter:'grayscale(1)',opacity:0.4}}>{nextBadge.icon}</span>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:500,color:'#555'}}>{nextBadge.name}</div>
+                        <div style={{fontSize:12,color:'#aaa'}}>{nextBadge.desc}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
+
+              <div style={{background:'#fff',border:'1px solid #eee',borderRadius:12,padding:16,marginBottom:12}}>
+                <div style={{fontSize:13,fontWeight:500,marginBottom:12}}>Badges ({earnedBadges.length}/{BADGES.length})</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:8}}>
+                  {BADGES.map(b=>{
+                    const earned=earnedBadges.find(e=>e.id===b.id);
+                    return(
+                      <div key={b.id} style={{background:earned?'#f0fdf4':'#fafafa',border:'1px solid '+(earned?'#86efac':'#eee'),borderRadius:10,padding:'10px 8px',textAlign:'center',opacity:earned?1:0.5}}>
+                        <div style={{fontSize:24,marginBottom:4}}>{b.icon}</div>
+                        <div style={{fontSize:11,fontWeight:500,color:earned?'#166534':'#888'}}>{b.name}</div>
+                        <div style={{fontSize:10,color:'#aaa',marginTop:2}}>{b.desc}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div style={{background:'#fff',border:'1px solid #eee',borderRadius:12,overflow:'hidden',marginBottom:12}}>
                 <div style={{padding:'10px 16px',borderBottom:'1px solid #eee',fontSize:13,fontWeight:500}}>Recent check-ins</div>
-                {dbCheckins.length===0&&<div style={{padding:'12px 16px',fontSize:13,color:'#aaa'}}>No check-ins yet. Visit a bar!</div>}
+                {dbCheckins.length===0&&<div style={{padding:'12px 16px',fontSize:13,color:'#aaa'}}>No check-ins yet. Go find a happy hour!</div>}
                 {dbCheckins.slice(0,5).map((c,i)=>(
                   <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'10px 16px',borderBottom:'1px solid #f5f5f5',fontSize:13}}>
                     <span>{c.restaurant_name}</span>
@@ -538,11 +617,12 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+
               <div style={{background:'#fff',border:'1px solid #eee',borderRadius:12,overflow:'hidden'}}>
                 <div style={{padding:'10px 16px',borderBottom:'1px solid #eee',fontSize:13,fontWeight:500}}>XP Guide</div>
-                {[['Check in','50 XP'],['Write a review','20 XP'],['Add a restaurant','25 XP'],['Rate','10 XP']].map(([a,x])=>(
+                {[['Check in at a bar','50 XP'],['Write a review','20 XP'],['Add a restaurant','25 XP'],['Rate a bar','10 XP']].map(([a,x])=>(
                   <div key={a} style={{display:'flex',justifyContent:'space-between',padding:'10px 16px',borderBottom:'1px solid #f5f5f5',fontSize:13}}>
-                    <span style={{color:'#555'}}>{a}</span><span style={{fontWeight:600}}>{x}</span>
+                    <span style={{color:'#555'}}>{a}</span><span style={{fontWeight:600,color:'#22c55e'}}>{x}</span>
                   </div>
                 ))}
               </div>
@@ -665,22 +745,19 @@ export default function Home() {
       )}
 
       {showAuth&&(
-        <div onClick={e=>{if(e.target===e.currentTarget){setShowAuth(false);setAuthError('');} }} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:16}}>
+        <div onClick={e=>{if(e.target===e.currentTarget){setShowAuth(false);setAuthError('');}}} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:16}}>
           <div style={{background:'#fff',borderRadius:16,padding:24,width:'min(400px,100%)'}}>
             <h2 style={{fontSize:20,fontWeight:700,marginBottom:4}}>{authMode==='login'?'Welcome back':'Create account'}</h2>
-            <p style={{fontSize:13,color:'#888',marginBottom:20}}>{authMode==='login'?'Sign in to track your happy hours':'Join to earn XP and track your visits'}</p>
-
+            <p style={{fontSize:13,color:'#888',marginBottom:20}}>{authMode==='login'?'Sign in to track your happy hours':'Join to earn XP, collect badges, and track your visits'}</p>
             <button onClick={signInWithGoogle} disabled={authLoading} style={{width:'100%',padding:'10px',fontSize:14,borderRadius:8,border:'1px solid #ddd',background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:16}}>
               <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
               Continue with Google
             </button>
-
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
               <div style={{flex:1,height:1,background:'#eee'}}/>
               <span style={{fontSize:12,color:'#aaa'}}>or</span>
               <div style={{flex:1,height:1,background:'#eee'}}/>
             </div>
-
             {authMode==='signup'&&(
               <div style={{marginBottom:10}}>
                 <label style={{fontSize:13,color:'#888',display:'block',marginBottom:3}}>Username</label>
@@ -695,13 +772,10 @@ export default function Home() {
               <label style={{fontSize:13,color:'#888',display:'block',marginBottom:3}}>Password</label>
               <input type="password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="••••••••" style={{width:'100%',padding:'8px 12px',borderRadius:8,border:'1px solid #ddd',fontSize:13}}/>
             </div>
-
             {authError&&<div style={{fontSize:13,color:'#dc2626',marginBottom:12,padding:'8px 12px',background:'#fef2f2',borderRadius:8}}>{authError}</div>}
-
             <button onClick={authMode==='login'?signInWithEmail:signUpWithEmail} disabled={authLoading} style={{width:'100%',padding:'10px',fontSize:14,borderRadius:8,border:'none',background:'#1a1a1a',color:'#fff',cursor:'pointer',marginBottom:12}}>
               {authLoading?'Loading...':(authMode==='login'?'Sign in':'Create account')}
             </button>
-
             <div style={{textAlign:'center',fontSize:13,color:'#888'}}>
               {authMode==='login'?'No account? ':'Already have one? '}
               <button onClick={()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthError('');}} style={{color:'#1a1a1a',fontWeight:500,background:'none',border:'none',cursor:'pointer',fontSize:13}}>
@@ -711,7 +785,6 @@ export default function Home() {
           </div>
         </div>
       )}
-
     </main>
   );
 }
